@@ -479,3 +479,32 @@ def iniciar_monitoramento():
 # ===========================
 if __name__ == "__main__":
     iniciar_monitoramento()
+
+# ===========================
+# 🌐 SERVIDOR WEB LEVE (para manter o Railway ativo)
+# ===========================
+from flask import Flask
+import threading
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return """
+    <h1>🧠 Brandon Wendell System - Ativo</h1>
+    <p>Sistema de monitoramento 24/7 para XAUUSD</p>
+    <p><strong>Status:</strong> Em execução</p>
+    """
+
+def executar_servidor():
+    app.run(host='0.0.0.0', port=8080)
+
+# Iniciar o servidor web em uma thread separada
+if __name__ == "__main__":
+    # Iniciar o servidor web
+    thread = threading.Thread(target=executar_servidor)
+    thread.daemon = True
+    thread.start()
+    
+    # Iniciar o monitoramento
+    iniciar_monitoramento()
