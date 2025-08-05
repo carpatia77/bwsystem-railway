@@ -1,5 +1,7 @@
 # main.py
 import yfinance as yf
+yf.pdr_override = lambda: None
+yf.set_tz_cache_location("/tmp/cache")
 import pandas as pd
 import numpy as np
 import requests
