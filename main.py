@@ -17,7 +17,7 @@ np.NaN = np.nan
 # ===========================
 # 🔧 CONFIGURAÇÕES
 # ===========================
-SYMBOL = "GC=F"           # XAUUSD via contrato futuro
+SYMBOL = "XAUUSD=X"           # XAUUSD via contrato futuro
 NAME = "XAUUSD"
 CHECK_INTERVAL = 15 * 60  # segundos (15 minutos)
 
