@@ -1,27 +1,21 @@
 # main.py
-import yfinance as yf
+import requests
 import pandas as pd
 import numpy as np
-import requests
 import time
 from datetime import datetime
 import os
-import warnings
 from threading import Thread
 from flask import Flask, jsonify
-import random
-
-# Suprimir warnings
-warnings.filterwarnings("ignore", category=FutureWarning)
-np.NaN = np.nan
 
 # ===========================
 # 🔧 CONFIGURAÇÕES
 # ===========================
-SYMBOLS = ["GC=F", "XAUUSD=X", "GLD"]  # Fallback
+API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "JX0AOXPZ01EL532N")  # Coloque sua chave
+SYMBOL = "XAUUSD"
 NAME = "XAUUSD"
 CHECK_INTERVAL = 15 * 60  # 15 minutos
-CSV_FILE = "/var/data/sinais_xauusd.csv"  # Pasta persistente no Render
+CSV_FILE = "/var/data/sinais_xauusd.csv"
 
 # 📞 Telegram
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
@@ -34,7 +28,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "<h1>🧠 Brandon Wendell System - Render.com</h1><p>Status: Em execução</p>"
+    return "<h1>🧠 Brandon Wendell System - Alpha Vantage</h1><p>Status: Em execução</p>"
 
 @app.route('/status')
 def status():
@@ -87,100 +81,77 @@ def salvar_sinal(sinal_data):
     print(f"💾 Sinal salvo: {sinal_data['sinal']}")
 
 # ===========================
-# 🔍 DOWNLOAD ROBUSTO
+# 🔍 BUSCAR DADOS DA ALPHA VANTAGE
 # ===========================
-def download_robusto(period, interval, max_attempts=6):
-    import random
-    from requests import Session
-    from requests.adapters import HTTPAdapter
-    from urllib3.util.retry import Retry
+def obter_dados_tf(interval):
+    """
+    Busca dados do XAUUSD em um timeframe específico
+    interval: 15min, 60min, daily
+    """
+    try:
+        if interval == "daily":
+            url = "https://www.alphavantage.co/query"
+            params = {
+                "function": "FX_DAILY",
+                "from_symbol": "XAU",
+                "to_symbol": "USD",
+                "apikey": API_KEY,
+                "outputsize": "compact"
+            }
+        else:
+            url = "https://www.alphavantage.co/query"
+            params = {
+                "function": "FX_INTRADAY",
+                "from_symbol": "XAU",
+                "to_symbol": "USD",
+                "interval": interval,
+                "apikey": API_KEY,
+                "outputsize": "compact"
+            }
 
-    session = Session()
-    retry_strategy = Retry(
-        total=max_attempts,
-        backoff_factor=2,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"]
-    )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
+        print(f"📡 Buscando dados ({interval})...")
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
 
-    for tentativa in range(max_attempts):
-        for ticker in SYMBOLS:
-            try:
-                user_agent = f'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{random.randint(80, 120)}.0.0.0 Safari/537.36'
-                session.headers.update({'User-Agent': user_agent})
+        if "Time Series FX" not in data:
+            print(f"❌ Erro na API: {data.get('Information', 'Dados não disponíveis')}")
+            return pd.DataFrame()
 
-                print(f"📥 Tentativa {tentativa+1}/{max_attempts} - {ticker} ({interval})...")
-                df = yf.download(ticker, period=period, interval=interval, progress=False, session=session)
+        key = list(data.keys())[1]  # Time Series (Xmin)
+        df = pd.DataFrame.from_dict(data[key], orient='index')
+        df = df.astype(float)
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        df = df.rename(columns={'1. open': 'open', '2. high': 'high', '3. low': 'low', '4. close': 'close'})
+        df = df[['open', 'high', 'low', 'close']]
+        return df
 
-                if not df.empty and len(df) >= 15:
-                    print(f"✅ Sucesso com {ticker}")
-                    return df, ticker
-
-            except Exception as e:
-                print(f"❌ Falha com {ticker}: {e}")
-                continue
-
-            time.sleep(random.uniform(2, 5))
-
-        if tentativa < max_attempts - 1:
-            wait = (2 ** tentativa) + random.uniform(0, 10)
-            print(f"🔁 Esperando {wait:.1f}s...")
-            time.sleep(wait)
-
-    print("❌ Falha crítica: Não foi possível baixar dados.")
-    return pd.DataFrame(), None
+    except Exception as e:
+        print(f"❌ Falha ao obter dados: {e}")
+        return pd.DataFrame()
 
 # ===========================
 # 🔍 ANÁLISE PRINCIPAL
 # ===========================
 def analisar_xauusd():
     print(f"\n🪙 {datetime.now().strftime('%H:%M:%S')} | Análise Estrutural: {NAME}")
-    
-    # === 1. ANÁLISE DE ZONAS ESTRUTURAIS ===
-    timeframes = {
-        'W1': {'interval': '1wk', 'period': '5y'},
-        'D1': {'interval': '1d', 'period': '2y'},
-        'H4': {'interval': '4h', 'period': '6mo'}
-    }
-    zonas_estruturais = {}
-    for key, config in timeframes.items():
-        df, ticker_usado = download_robusto(config['period'], config['interval'])
-        if not df.empty:
-            swing_lows = []
-            swing_highs = []
-            for i in range(3, len(df) - 3):
-                low = df['low'].iloc[i]
-                high = df['high'].iloc[i]
-                if low == df['low'].iloc[i-3:i+4].min():
-                    swing_lows.append({'price': low})
-                if high == df['high'].iloc[i-3:i+4].max():
-                    swing_highs.append({'price': high})
-            zonas_estruturais[key] = {
-                'suporte_recente': swing_lows[-1]['price'] if swing_lows else None,
-                'resistencia_recente': swing_highs[-1]['price'] if swing_highs else None,
-                'ticker': ticker_usado
-            }
 
-    # === 2. ANÁLISE TÉCNICA (W1, D1, H4, M15) ===
-    timeframes_tec = {
-        'w1': {'interval': '1wk', 'period': '5y'},
-        'd1': {'interval': '1d', 'period': '3mo'},
-        'h4': {'interval': '4h', 'period': '3mo'},
-        'm15': {'interval': '15m', 'period': '6d'}
+    # === 1. BUSCAR DADOS ===
+    timeframes = {
+        'w1': {'interval': '60min', 'period': '168h', 'nome': 'W1'},  # 7 dias x 24h
+        'd1': {'interval': '60min', 'nome': 'D1'},
+        'h4': {'interval': '60min', 'nome': 'H4'},
+        'm15': {'interval': '15min', 'nome': 'M15'}
     }
+
     dados = {}
-    for key, config in timeframes_tec.items():
-        df, ticker_usado = download_robusto(config['period'], config['interval'])
+    for key, config in timeframes.items():
+        df = obter_dados_tf(config['interval'])
         if df.empty or len(df) < 15:
+            print(f"⚠️ Dados insuficientes para {config['nome']}")
             continue
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df.columns = df.columns.str.lower().str.strip()
-        
-        # Cálculo RSI e EMA
+
+        # Cálculo de RSI e EMA
         delta = df['close'].diff()
         gain = delta.where(delta > 0, 0)
         loss = (-delta).where(delta < 0, 0)
@@ -190,13 +161,14 @@ def analisar_xauusd():
         df['rsi_14'] = 100 - (100 / (1 + rs))
         df['ema_21'] = df['close'].ewm(span=21).mean()
         df.dropna(inplace=True)
+
         if df.empty:
             continue
+
         dados[key] = df.iloc[-1].copy()
-        dados[key]['ticker'] = ticker_usado
 
     if 'd1' not in dados or 'h4' not in dados or 'm15' not in dados:
-        print("⚠️ Dados insuficientes")
+        print("⚠️ Dados insuficientes. Aguardando próxima verificação.")
         return None
 
     d1_rsi = float(dados['d1']['rsi_14'])
@@ -204,17 +176,25 @@ def analisar_xauusd():
     m15_rsi = float(dados['m15']['rsi_14'])
     preco_atual = dados['m15']['close']
 
-    # === 3. GERAÇÃO DE SINAL ===
-    buy_zone = zonas_estruturais.get('H4', {}).get('suporte_recente') and dados['d1']['close'] > dados['d1']['ema_21']
-    sell_zone = zonas_estruturais.get('H4', {}).get('resistencia_recente') and dados['d1']['close'] < dados['d1']['ema_21']
+    # Tendência
+    d1_bullish = d1_rsi > 50 and dados['d1']['close'] > dados['d1']['ema_21']
+    h4_bullish = h4_rsi > 50 and dados['h4']['close'] > dados['h4']['ema_21']
 
-    sinal = "⚪ AGUARDAR: Estrutura não confirmada"
-    if buy_zone and m15_rsi >= 40:
-        sinal = "🟢 COMPRA: Zona de Acumulação"
-    elif sell_zone and m15_rsi <= 60:
-        sinal = "🔴 VENDA: Zona de Distribuição"
+    # === 4. GERAÇÃO DE SINAL ===
+    if d1_bullish and h4_bullish:
+        if m15_rsi >= 40:
+            sinal = "🟢 COMPRA: Tendência de alta confirmada"
+        else:
+            sinal = "🟡 AGUARDAR: RSI muito baixo (momentum fraco)"
+    elif not d1_bullish and not h4_bullish:
+        if m15_rsi <= 60:
+            sinal = "🔴 VENDA: Tendência de baixa confirmada"
+        else:
+            sinal = "🟡 AGUARDAR: RSI muito alto (momentum forte)"
+    else:
+        sinal = "⚪ AGUARDAR: Estrutura não alinhada"
 
-    # === 4. MENSAGEM ===
+    # === 5. MENSAGEM ===
     msg = f"🪙 <b>{NAME}</b> | Análise Estrutural\n"
     msg += f"{'='*40}\n"
     msg += f"• D1 RSI: {d1_rsi:.1f}\n"
@@ -222,20 +202,20 @@ def analisar_xauusd():
     msg += f"• M15 RSI: {m15_rsi:.1f}\n"
     msg += f"\n🎯 <b>{sinal}</b>\n"
     msg += f"💰 Preço: <b>{preco_atual:.2f}</b>\n"
-    msg += f"📌 Fonte: Brandon Wendell\n"
+    msg += f"📌 Fonte: Alpha Vantage + Brandon Wendell\n"
     msg += f"⏱️ {datetime.now().strftime('%H:%M %d/%m')}"
 
     enviar_telegram(msg)
     print(f"✅ Análise concluída | Sinal: {sinal}")
-    
+
     salvar_sinal({
         'symbol': NAME,
         'preco': preco_atual,
         'sinal': sinal,
-        'tendencia': 'bullish' if dados['d1']['close'] > dados['d1']['ema_21'] else 'bearish',
+        'tendencia': 'bullish' if d1_bullish and h4_bullish else 'bearish',
         'rsi_m15': m15_rsi,
         'stop_loss': None,
-        'zona_tipo': 'W_base' if buy_zone else 'M_base' if sell_zone else 'N/A',
+        'zona_tipo': 'N/A',
         'confianca': 'média'
     })
 
@@ -250,7 +230,7 @@ def loop_monitoramento():
     print(f"📊 Ativo: {NAME}")
     criar_csv()
     if TELEGRAM_TOKEN:
-        enviar_telegram("🟢 Sistema iniciado!")
+        enviar_telegram("🟢 Sistema iniciado com Alpha Vantage!")
     else:
         print("ℹ️ Telegram desativado")
 
