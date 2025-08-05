@@ -7,9 +7,9 @@ import time
 from datetime import datetime
 import os
 import warnings
-from requests import Session
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from threading import Thread
+from flask import Flask, jsonify
+import random
 
 # Suprimir warnings chatos
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -18,24 +18,51 @@ np.NaN = np.nan
 # ===========================
 # 🔧 CONFIGURAÇÕES
 # ===========================
-# Tente diferentes tickers de ouro
-SYMBOLS = ["GC=F", "XAUUSD=X", "GLD"]
+SYMBOLS = ["GC=F", "XAUUSD=X", "GLD"]  # Múltiplos tickers
 NAME = "XAUUSD"
-CHECK_INTERVAL = 15 * 60  # segundos (15 minutos)
-
-# Caminho absoluto para o Railway
+CHECK_INTERVAL = 15 * 60  # 15 minutos
 CSV_FILE = "/app/sinais_xauusd.csv"
 
-# 📞 Telegram (vindo das variáveis de ambiente)
+# 📞 Telegram
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+# ===========================
+# 🌐 SERVIDOR WEB LEVE (Flask)
+# ===========================
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return """
+    <h1>🧠 Brandon Wendell System - Ativo</h1>
+    <p>Sistema de monitoramento 24/7 para XAUUSD</p>
+    <p><strong>Status:</strong> Em execução</p>
+    <p><a href="/status">Ver último sinal</a></p>
+    """
+
+@app.route('/status')
+def status():
+    if os.path.exists(CSV_FILE):
+        try:
+            log = pd.read_csv(CSV_FILE)
+            ultimo = log.iloc[-1]
+            return jsonify({
+                "status": "running",
+                "last_signal": ultimo['sinal'],
+                "price": ultimo['preco'],
+                "timestamp": ultimo['timestamp']
+            })
+        except:
+            pass
+    return jsonify({"status": "running", "last_signal": "Aguardando primeiro sinal"})
 
 # ===========================
 # 📡 FUNÇÕES DE APOIO
 # ===========================
 def enviar_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("ℹ️ Telegram desativado (configure as variáveis de ambiente)")
+        print("ℹ️ Telegram desativado")
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -45,7 +72,7 @@ def enviar_telegram(msg):
     except Exception as e:
         print(f"❌ Falha ao enviar Telegram: {e}")
 
-# Criar CSV se não existir
+# Criar CSV
 def criar_csv():
     if not os.path.exists(CSV_FILE):
         with open(CSV_FILE, "w") as f:
@@ -64,20 +91,23 @@ def salvar_sinal(sinal_data):
     print(f"💾 Sinal salvo: {sinal_data['sinal']}")
 
 # ===========================
-# 🔍 FUNÇÃO DE DOWNLOAD ROBUSTA
+# 🔍 DOWNLOAD ROBUSTO COM RETRY
 # ===========================
 def download_robusto(period, interval, max_attempts=6):
     """
-    Baixa dados com múltiplas tentativas, backoff exponencial e fallback de ticker.
+    Baixa dados com múltiplos tickers, retries e User-Agent rotativo
     """
     import random
+    from requests import Session
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
 
-    # Configuração de retry
+    # Configuração de sessão com retry
     session = Session()
     retry_strategy = Retry(
         total=max_attempts,
-        backoff_factor=2,  # 1, 2, 4, 8, 16, 32 segundos
-        status_forcelist=[429, 500, 502, 503, 504],  # Erros comuns
+        backoff_factor=2,
+        status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["GET"]
     )
     adapter = HTTPAdapter(max_retries=retry_strategy)
@@ -87,31 +117,30 @@ def download_robusto(period, interval, max_attempts=6):
     for tentativa in range(max_attempts):
         for ticker in SYMBOLS:
             try:
-                # User-Agent aleatório para evitar bloqueios
+                # User-Agent aleatório
                 user_agent = f'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{random.randint(80, 120)}.0.0.0 Safari/537.36'
                 session.headers.update({'User-Agent': user_agent})
 
-                print(f"📥 Tentativa {tentativa+1}/{max_attempts} - Baixando {ticker} ({interval})...")
+                print(f"📥 Tentativa {tentativa+1}/{max_attempts} - {ticker} ({interval})...")
                 df = yf.download(ticker, period=period, interval=interval, progress=False, session=session)
 
                 if not df.empty and len(df) >= 15:
-                    print(f"✅ Sucesso! Dados de {ticker} baixados.")
-                    return df, ticker  # Retorna os dados e o ticker que funcionou
+                    print(f"✅ Sucesso com {ticker}")
+                    return df, ticker
 
             except Exception as e:
                 print(f"❌ Falha com {ticker}: {e}")
-                continue  # Tenta o próximo ticker
+                continue
 
-            # Delay entre tentativas de ticker
-            time.sleep(random.uniform(1, 3))
+            time.sleep(random.uniform(2, 5))
 
-        # Se todos os tickers falharem nesta tentativa, espera com backoff
+        # Backoff exponencial
         if tentativa < max_attempts - 1:
             wait = (2 ** tentativa) + random.uniform(0, 10)
-            print(f"🔁 Todos os tickers falharam. Esperando {wait:.1f}s antes da próxima tentativa...")
+            print(f"🔁 Esperando {wait:.1f}s...")
             time.sleep(wait)
 
-    print("❌ Falha crítica: Não foi possível baixar dados após múltiplas tentativas.")
+    print("❌ Falha crítica: Não foi possível baixar dados.")
     return pd.DataFrame(), None
 
 # ===========================
@@ -451,7 +480,7 @@ def analisar_xauusd():
 # ===========================
 # 🚀 LOOP PRINCIPAL 24/7
 # ===========================
-def iniciar_monitoramento():
+def loop_monitoramento():
     print("🟢 Sistema de monitoramento iniciado...")
     print(f"🔔 Intervalo: {CHECK_INTERVAL//60} minutos")
     print(f"📊 Ativo: {NAME}")
@@ -467,9 +496,6 @@ def iniciar_monitoramento():
             analisar_xauusd()
             print(f"⏳ Próxima verificação em {CHECK_INTERVAL//60} minutos...")
             time.sleep(CHECK_INTERVAL)
-        except KeyboardInterrupt:
-            print("\n🛑 Monitoramento interrompido pelo usuário.")
-            break
         except Exception as e:
             print(f"❌ Erro no loop: {e}")
             time.sleep(60)
@@ -478,33 +504,10 @@ def iniciar_monitoramento():
 # ▶️ EXECUTAR
 # ===========================
 if __name__ == "__main__":
-    iniciar_monitoramento()
-
-# ===========================
-# 🌐 SERVIDOR WEB LEVE (para manter o Railway ativo)
-# ===========================
-from flask import Flask
-import threading
-
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return """
-    <h1>🧠 Brandon Wendell System - Ativo</h1>
-    <p>Sistema de monitoramento 24/7 para XAUUSD</p>
-    <p><strong>Status:</strong> Em execução</p>
-    """
-
-def executar_servidor():
-    app.run(host='0.0.0.0', port=8080)
-
-# Iniciar o servidor web em uma thread separada
-if __name__ == "__main__":
-    # Iniciar o servidor web
-    thread = threading.Thread(target=executar_servidor)
-    thread.daemon = True
-    thread.start()
+    # Iniciar o servidor web em uma thread
+    web_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=8080))
+    web_thread.daemon = True
+    web_thread.start()
     
-    # Iniciar o monitoramento
-    iniciar_monitoramento()
+    # Iniciar o loop de monitoramento
+    loop_monitoramento()
