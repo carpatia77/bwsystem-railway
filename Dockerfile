@@ -8,10 +8,7 @@ RUN pip install --upgrade pip && \
 
 COPY main.py .
 
-# Cria usuário não-root
-RUN adduser --disabled-password --gecos '' appuser && \
-    chown -R appuser:appuser /app
-USER appuser
+RUN mkdir -p /var/data
 
 EXPOSE 8080
 
