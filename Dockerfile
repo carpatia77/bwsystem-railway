@@ -13,6 +13,7 @@ RUN adduser --disabled-password --gecos '' appuser && \
     chown -R appuser:appuser /app
 USER appuser
 
+# Expõe a porta
 EXPOSE 8080
 
 CMD ["python", "main.py"]
