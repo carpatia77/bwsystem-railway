@@ -1,7 +1,5 @@
 # main.py
 import yfinance as yf
-yf.pdr_override = lambda: None
-yf.set_tz_cache_location("/tmp/cache")
 import pandas as pd
 import numpy as np
 import requests
@@ -9,6 +7,9 @@ import time
 from datetime import datetime
 import os
 import warnings
+from requests import Session
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Suprimir warnings chatos
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -17,9 +18,13 @@ np.NaN = np.nan
 # ===========================
 # 🔧 CONFIGURAÇÕES
 # ===========================
-SYMBOL = "XAUUSD=X"           # XAUUSD via contrato futuro
+# Tente diferentes tickers de ouro
+SYMBOLS = ["GC=F", "XAUUSD=X", "GLD"]
 NAME = "XAUUSD"
 CHECK_INTERVAL = 15 * 60  # segundos (15 minutos)
+
+# Caminho absoluto para o Railway
+CSV_FILE = "/app/sinais_xauusd.csv"
 
 # 📞 Telegram (vindo das variáveis de ambiente)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
@@ -41,10 +46,11 @@ def enviar_telegram(msg):
         print(f"❌ Falha ao enviar Telegram: {e}")
 
 # Criar CSV se não existir
-CSV_FILE = "/app/sinais_xauusd.csv"  # Caminho absoluto no Railway
-if not os.path.exists(CSV_FILE):
-    with open(CSV_FILE, "w") as f:
-        f.write("timestamp,symbol,preco,sinal,tendencia,rsi_m15,stop_loss,zona_tipo,confianca\n")
+def criar_csv():
+    if not os.path.exists(CSV_FILE):
+        with open(CSV_FILE, "w") as f:
+            f.write("timestamp,symbol,preco,sinal,tendencia,rsi_m15,stop_loss,zona_tipo,confianca\n")
+        print("✅ Arquivo CSV criado")
 
 def salvar_sinal(sinal_data):
     with open(CSV_FILE, "a") as f:
@@ -56,6 +62,57 @@ def salvar_sinal(sinal_data):
         row += f"{stop_loss_str},{zona_str},{confianca_str}\n"
         f.write(row)
     print(f"💾 Sinal salvo: {sinal_data['sinal']}")
+
+# ===========================
+# 🔍 FUNÇÃO DE DOWNLOAD ROBUSTA
+# ===========================
+def download_robusto(period, interval, max_attempts=6):
+    """
+    Baixa dados com múltiplas tentativas, backoff exponencial e fallback de ticker.
+    """
+    import random
+
+    # Configuração de retry
+    session = Session()
+    retry_strategy = Retry(
+        total=max_attempts,
+        backoff_factor=2,  # 1, 2, 4, 8, 16, 32 segundos
+        status_forcelist=[429, 500, 502, 503, 504],  # Erros comuns
+        allowed_methods=["GET"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+
+    for tentativa in range(max_attempts):
+        for ticker in SYMBOLS:
+            try:
+                # User-Agent aleatório para evitar bloqueios
+                user_agent = f'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{random.randint(80, 120)}.0.0.0 Safari/537.36'
+                session.headers.update({'User-Agent': user_agent})
+
+                print(f"📥 Tentativa {tentativa+1}/{max_attempts} - Baixando {ticker} ({interval})...")
+                df = yf.download(ticker, period=period, interval=interval, progress=False, session=session)
+
+                if not df.empty and len(df) >= 15:
+                    print(f"✅ Sucesso! Dados de {ticker} baixados.")
+                    return df, ticker  # Retorna os dados e o ticker que funcionou
+
+            except Exception as e:
+                print(f"❌ Falha com {ticker}: {e}")
+                continue  # Tenta o próximo ticker
+
+            # Delay entre tentativas de ticker
+            time.sleep(random.uniform(1, 3))
+
+        # Se todos os tickers falharem nesta tentativa, espera com backoff
+        if tentativa < max_attempts - 1:
+            wait = (2 ** tentativa) + random.uniform(0, 10)
+            print(f"🔁 Todos os tickers falharam. Esperando {wait:.1f}s antes da próxima tentativa...")
+            time.sleep(wait)
+
+    print("❌ Falha crítica: Não foi possível baixar dados após múltiplas tentativas.")
+    return pd.DataFrame(), None
 
 # ===========================
 # 🔍 DETECÇÃO DE ZONAS ESTRUTURAIS
@@ -81,6 +138,7 @@ def detectar_zonas(df, window=3, min_distance=3):
                 'type': 'resistance',
                 'candle': df.index[i]
             })
+
     def filtrar_proximos(zonas):
         if not zonas:
             return []
@@ -92,6 +150,7 @@ def detectar_zonas(df, window=3, min_distance=3):
                abs(zona['price'] - ultima['price']) / ultima['price'] > 0.001:
                 filtradas.append(zona)
         return filtradas
+
     return {
         'suportes': filtrar_proximos(swing_lows),
         'resistencias': filtrar_proximos(swing_highs)
@@ -144,7 +203,7 @@ def analisar_zonas_estruturais():
     resultados = {}
     for key, config in timeframes.items():
         try:
-            df = yf.download(SYMBOL, period=config['period'], interval=config['interval'], progress=False)
+            df, ticker_usado = download_robusto(config['period'], config['interval'])
             if df.empty or len(df) < 10:
                 continue
             if isinstance(df.columns, pd.MultiIndex):
@@ -157,7 +216,8 @@ def analisar_zonas_estruturais():
                 'zonas': zonas,
                 'padroes': padroes,
                 'suporte_recente': zonas['suportes'][-1]['price'] if zonas['suportes'] else None,
-                'resistencia_recente': zonas['resistencias'][-1]['price'] if zonas['resistencias'] else None
+                'resistencia_recente': zonas['resistencias'][-1]['price'] if zonas['resistencias'] else None,
+                'ticker': ticker_usado
             }
         except Exception as e:
             print(f"❌ Erro na análise de zonas ({key}): {e}")
@@ -168,19 +228,24 @@ def analisar_zonas_estruturais():
 # 🔍 ANÁLISE MULTITIMEFRAME (PRINCIPAL)
 # ===========================
 def analisar_xauusd():
-    print(f"\n🪙 {datetime.now().strftime('%H:%M:%S')} | Análise Estrutural: {NAME} ({SYMBOL})")
+    print(f"\n🪙 {datetime.now().strftime('%H:%M:%S')} | Análise Estrutural: {NAME}")
+    
     # === 1. ANÁLISE DE ZONAS ESTRUTURAIS (W1, D1, H4) ===
     zonas_estruturais = analisar_zonas_estruturais()
+    
     if not zonas_estruturais:
         print("⚠️ Falha ao analisar zonas estruturais")
         return None
+    
     # Extrair padrões
     w1_padroes = zonas_estruturais.get('W1', {}).get('padroes', [])
     d1_padroes = zonas_estruturais.get('D1', {}).get('padroes', [])
     h4_padroes = zonas_estruturais.get('H4', {}).get('padroes', [])
+    
     # Verificar convergência de zonas
     buy_zone_convergente = any(p['tipo'] == 'W_base' for p in w1_padroes + d1_padroes + h4_padroes)
     sell_zone_convergente = any(p['tipo'] == 'M_base' for p in w1_padroes + d1_padroes + h4_padroes)
+    
     # === 2. ANÁLISE TÉCNICA (W1, D1, H4, M15) ===
     timeframes = {
         'w1': {'interval': '1wk', 'period': '5y', 'nome': 'W1'},
@@ -188,15 +253,20 @@ def analisar_xauusd():
         'h4': {'interval': '4h', 'period': '3mo', 'nome': 'H4'},
         'm15': {'interval': '15m', 'period': '6d', 'nome': 'M15'}
     }
+    
     dados = {}
     for key, config in timeframes.items():
         try:
-            df = yf.download(SYMBOL, period=config['period'], interval=config['interval'], progress=False)
+            df, ticker_usado = download_robusto(config['period'], config['interval'])
+            
             if df.empty or len(df) < 15:
+                print(f"⚠️ Dados insuficientes para {config['nome']}")
                 continue
+
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             df.columns = df.columns.str.lower().str.strip()
+
             # Cálculo manual de RSI e EMA
             delta = df['close'].diff()
             gain = delta.where(delta > 0, 0)
@@ -207,8 +277,10 @@ def analisar_xauusd():
             df['rsi_14'] = 100 - (100 / (1 + rs))
             df['ema_21'] = df['close'].ewm(span=21).mean()
             df.dropna(inplace=True)
+
             if df.empty:
                 continue
+
             # Divergência (só no M15)
             df['divergencia'] = None
             if key == 'm15':
@@ -219,18 +291,24 @@ def analisar_xauusd():
                         df['divergencia'] = "bullish_divergence"
                     elif close[-1] > close[-2] and rsi_vals[-1] < rsi_vals[-2]:
                         df['divergencia'] = "bearish_divergence"
+
             dados[key] = df.iloc[-1].copy()
+            dados[key]['ticker'] = ticker_usado
+
         except Exception as e:
             print(f"❌ Erro no timeframe {key}: {e}")
             continue
+
     # Verificar se temos os dados principais
     if 'd1' not in dados or 'h4' not in dados or 'm15' not in dados:
         print("⚠️ Dados insuficientes. Aguardando próxima verificação.")
         return None
+
     w1 = dados.get('w1')
     d1 = dados['d1']
     h4 = dados['h4']
     m15 = dados['m15']
+
     try:
         d1_rsi = float(d1['rsi_14'])
         h4_rsi = float(h4['rsi_14'])
@@ -239,11 +317,13 @@ def analisar_xauusd():
     except:
         print("❌ Erro ao ler RSI")
         return None
+
     preco_atual = m15['close']
     stop_buy = m15['low'] * 0.995 if pd.notna(m15['low']) else None
     stop_sell = m15['high'] * 1.005 if pd.notna(m15['high']) else None
     sinal = None
     zona_info = {}
+
     # === 3. DETECÇÃO DE TENDÊNCIA POR TIMEFRAME ===
     def tendencia_descricao(preco, ema, rsi):
         if preco > ema and rsi > 50:
@@ -252,18 +332,22 @@ def analisar_xauusd():
             return "🔴 Bearish (momentum negativo)"
         else:
             return "🟡 Neutro (sem direção clara)"
+
     w1_tendencia = tendencia_descricao(w1['close'], w1['ema_21'], w1_rsi) if w1 is not None else "N/A"
     d1_tendencia = tendencia_descricao(d1['close'], d1['ema_21'], d1_rsi)
     h4_tendencia = tendencia_descricao(h4['close'], h4['ema_21'], h4_rsi)
     m15_tendencia = tendencia_descricao(m15['close'], m15['ema_21'], m15_rsi)
+
     # Tendência principal
     d1_bullish = d1_rsi > 50 and d1['close'] > d1['ema_21']
     d1_bearish = d1_rsi < 50 and d1['close'] < d1['ema_21']
     h4_bullish = h4_rsi > 50 and h4['close'] > h4['ema_21']
     h4_bearish = h4_rsi < 50 and h4['close'] < h4['ema_21']
+
     # === 4. GERAÇÃO DE SINAL COM CONTEXTO ===
     if d1_bullish and h4_bullish and buy_zone_convergente:
         distancia_suporte = abs(preco_atual - zonas_estruturais['H4']['suporte_recente']) / zonas_estruturais['H4']['suporte_recente'] if zonas_estruturais['H4']['suporte_recente'] else 1
+        
         if distancia_suporte < 0.008 and m15_rsi >= 40:
             sinal = "🟢 COMPRA: Zona de Acumulação (W Base) Confirmada"
             zona_info = {
@@ -276,8 +360,10 @@ def analisar_xauusd():
             sinal = "🟡 AGUARDAR: Preço distante da zona de suporte estrutural (pullback necessário)"
         else:
             sinal = "❌ NÃO COMPRAR: Momentum muito fraco (RSI < 40)"
+            
     elif d1_bearish and h4_bearish and sell_zone_convergente:
         distancia_resistencia = abs(preco_atual - zonas_estruturais['H4']['resistencia_recente']) / zonas_estruturais['H4']['resistencia_recente'] if zonas_estruturais['H4']['resistencia_recente'] else 1
+        
         if distancia_resistencia < 0.008 and m15_rsi <= 60:
             sinal = "🔴 VENDA: Zona de Distribuição (M Base) Confirmada"
             zona_info = {
@@ -290,31 +376,38 @@ def analisar_xauusd():
             sinal = "🟡 AGUARDAR: Preço distante da zona de resistência estrutural (rally necessário)"
         else:
             sinal = "❌ NÃO VENDER: Momentum muito forte (RSI > 60)"
+            
     else:
         sinal = "⚪ AGUARDAR: Estrutura de mercado não confirmada"
+
     # === 5. MENSAGEM COM CONTEXTO E TENDÊNCIAS ===
     msg = f"🪙 <b>{NAME}</b> | Análise Estrutural\n"
     msg += f"{'='*40}\n"
+    
     # Resumo de tendência por timeframe
     msg += "📊 <b>TENDÊNCIAS POR TIMEFRAME</b>\n"
     if w1 is not None:
-        msg += f"• W1: {w1_tendencia} (RSI={w1_rsi:.1f})\n"
-    msg += f"• D1: {d1_tendencia} (RSI={d1_rsi:.1f})\n"
-    msg += f"• H4: {h4_tendencia} (RSI={h4_rsi:.1f})\n"
-    msg += f"• M15: {m15_tendencia} (RSI={m15_rsi:.1f})\n"
+        msg += f"• W1: {w1_tendencia} (RSI={w1_rsi:.1f}) [{w1.get('ticker', 'N/A')}]\n"
+    msg += f"• D1: {d1_tendencia} (RSI={d1_rsi:.1f}) [{d1.get('ticker', 'N/A')}]\n"
+    msg += f"• H4: {h4_tendencia} (RSI={h4_rsi:.1f}) [{h4.get('ticker', 'N/A')}]\n"
+    msg += f"• M15: {m15_tendencia} (RSI={m15_rsi:.1f}) [{m15.get('ticker', 'N/A')}]\n"
+    
     msg += f"\n🎯 <b>{sinal}</b>\n"
     msg += f"💰 Preço atual: <b>{preco_atual:.2f}</b>\n"
+    
     # Contexto das zonas
     if buy_zone_convergente:
         msg += f"\n🔍 <b>ZONA DE ACUMULAÇÃO (W BASE)</b>\n"
         msg += "• Estrutura de suporte identificada em múltiplos timeframes\n"
         msg += "• Alta probabilidade de reversão para cima\n"
         msg += "• Ideal para entrada com RSI ≥ 40\n"
+    
     if sell_zone_convergente:
         msg += f"\n🔍 <b>ZONA DE DISTRIBUIÇÃO (M BASE)</b>\n"
         msg += "• Estrutura de resistência identificada em múltiplos timeframes\n"
         msg += "• Alta probabilidade de reversão para baixo\n"
         msg += "• Ideal para entrada com RSI ≤ 60\n"
+    
     # Recomendações
     if "COMPRA" in sinal:
         suporte = zonas_estruturais['H4']['suporte_recente']
@@ -333,11 +426,14 @@ def analisar_xauusd():
         msg += "• Não force entrada\n"
         msg += "• Aguarde o preço retornar à zona estrutural\n"
         msg += "• Confirme com RSI e divergência\n"
+    
     msg += f"\n📌 Fonte: Brandon Wendell + Análise Estrutural\n"
     msg += f"⏱️ Atualizado: {datetime.now().strftime('%H:%M %d/%m')}"
+
     # Enviar alerta
     enviar_telegram(msg)
     print(f"✅ Análise concluída | Sinal: {sinal}")
+    
     # Salvar
     salvar_sinal({
         'symbol': NAME,
@@ -349,6 +445,7 @@ def analisar_xauusd():
         'zona_tipo': zona_info.get('zona_tipo', 'N/A'),
         'confianca': zona_info.get('confianca', 'N/A')
     })
+
     return sinal
 
 # ===========================
@@ -357,11 +454,14 @@ def analisar_xauusd():
 def iniciar_monitoramento():
     print("🟢 Sistema de monitoramento iniciado...")
     print(f"🔔 Intervalo: {CHECK_INTERVAL//60} minutos")
-    print(f"📊 Ativo: {NAME} ({SYMBOL})")
+    print(f"📊 Ativo: {NAME}")
+    criar_csv()
+    
     if TELEGRAM_TOKEN:
         enviar_telegram("🟢 Sistema de monitoramento XAUUSD iniciado!\nAnálise Estrutural Ativada")
     else:
         print("ℹ️ Telegram desativado (configure TELEGRAM_TOKEN e TELEGRAM_CHAT_ID)")
+
     while True:
         try:
             analisar_xauusd()
