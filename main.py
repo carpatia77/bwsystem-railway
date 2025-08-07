@@ -196,22 +196,20 @@ def loop_monitoramento():
             print(f"❌ Erro no loop: {e}")
             time.sleep(60)
 
-# ===========================
-# ▶️ EXECUTAR
-# ===========================
+
 # ===========================
 # ▶️ EXECUTAR
 # ===========================
 if __name__ == "__main__":
-    # Iniciar o servidor web em uma thread SEPARADA
+    # Iniciar o servidor web em uma thread separada
     web_thread = Thread(target=lambda: app.run(
         host='0.0.0.0',
         port=8080,
         debug=False,
-        use_reloader=False  # Evita duplicar o loop
+        use_reloader=False
     ), daemon=True)
     
     web_thread.start()
     
-    # O loop de monitoramento roda na thread PRINCIPAL
+    # O loop principal roda na thread principal
     loop_monitoramento()  # ou iniciar_monitoramento()
