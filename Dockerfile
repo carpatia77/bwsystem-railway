@@ -8,8 +8,6 @@ RUN pip install --upgrade pip && \
 
 COPY main.py .
 
-RUN mkdir -p /var/data
-
 EXPOSE 8080
 
 CMD ["python", "main.py"]
