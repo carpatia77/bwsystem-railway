@@ -83,19 +83,27 @@ def salvar_sinal(sinal_data):
 # ===========================
 # 🔍 LER DADOS DO GOOGLE SHEETS
 # ===========================
+# ===========================
+# 🔍 LER DADOS DO GOOGLE SHEETS
+# ===========================
 def ler_dados_sheets():
     try:
-        # ✅ Scope correto (sem espaços extras)
+        # ✅ Use google-auth (moderno)
+        from google.oauth2.service_account import Credentials
+        import gspread
+
         scope = [
             "https://spreadsheets.google.com/feeds",
             "https://www.googleapis.com/auth/drive"
         ]
-        from google.oauth2.service_account import Credentials
+        
+        # Caminho do arquivo no Render.com
         creds = Credentials.from_service_account_file("/app/secrets.json", scopes=scope)
         client = gspread.authorize(creds)
         
-        sheet = client.open(SHEET_NAME).sheet1
-        dados = sheet.get_all_records()[-1]
+        # Abrir planilha
+        sheet = client.open("XAUUSD_Data").sheet1
+        dados = sheet.get_all_records()[-1]  # Última linha
         
         return {
             'preco': dados['preco'],
