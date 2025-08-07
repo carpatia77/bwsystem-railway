@@ -199,8 +199,19 @@ def loop_monitoramento():
 # ===========================
 # ▶️ EXECUTAR
 # ===========================
+# ===========================
+# ▶️ EXECUTAR
+# ===========================
 if __name__ == "__main__":
-    web_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=8080, debug=False))
-    web_thread.daemon = True
+    # Iniciar o servidor web em uma thread SEPARADA
+    web_thread = Thread(target=lambda: app.run(
+        host='0.0.0.0',
+        port=8080,
+        debug=False,
+        use_reloader=False  # Evita duplicar o loop
+    ), daemon=True)
+    
     web_thread.start()
-    loop_monitoramento()
+    
+    # O loop de monitoramento roda na thread PRINCIPAL
+    loop_monitoramento()  # ou iniciar_monitoramento()
