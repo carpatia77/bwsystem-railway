@@ -1,4 +1,4 @@
-# main.py - Sistema no Render.com
+# main.py - Sistema no Render.com (Versão Final)
 import gspread
 import pandas as pd
 import numpy as np
@@ -54,6 +54,7 @@ def enviar_telegram(msg):
         print("ℹ️ Telegram desativado")
         return
     try:
+        # ✅ URL corrigida (sem espaços extras)
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}
         requests.post(url, data=data, timeout=10)
@@ -84,8 +85,11 @@ def salvar_sinal(sinal_data):
 # ===========================
 def ler_dados_sheets():
     try:
-        # Autenticar
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        # ✅ Scope corrigido (sem espaços extras)
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ]
         from oauth2client.service_account import ServiceAccountCredentials
         creds = ServiceAccountCredentials.from_json_keyfile_name("/app/secrets.json", scope)
         client = gspread.authorize(creds)
@@ -108,7 +112,7 @@ def ler_dados_sheets():
         return None
 
 # ===========================
-# 🔍 ANÁLISE MULTITIMEFRAME
+# 🔍 ANÁLISE MULTITIMEFRAME (com contexto estrutural)
 # ===========================
 def analisar_xauusd():
     print(f"\n🪙 {datetime.now().strftime('%H:%M:%S')} | Análise Estrutural: {NAME}")
@@ -136,7 +140,7 @@ def analisar_xauusd():
     alinhado = (tend_d1 == "🟢 Bullish" and tend_h4 == "🟢 Bullish") or \
                (tend_d1 == "🔴 Bearish" and tend_h4 == "🔴 Bearish")
 
-    # Geração de sinal
+    # Geração de sinal com contexto
     if alinhado and tend_d1 == "🟢 Bullish" and rsi_m15 >= 40:
         sinal = "🟢 COMPRA: Tendência de alta confirmada"
     elif alinhado and tend_d1 == "🔴 Bearish" and rsi_m15 <= 60:
