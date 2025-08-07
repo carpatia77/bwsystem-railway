@@ -85,18 +85,17 @@ def salvar_sinal(sinal_data):
 # ===========================
 def ler_dados_sheets():
     try:
-        # ✅ Scope corrigido (sem espaços extras)
+        # ✅ Scope correto (sem espaços extras)
         scope = [
             "https://spreadsheets.google.com/feeds",
             "https://www.googleapis.com/auth/drive"
         ]
-        from oauth2client.service_account import ServiceAccountCredentials
-        creds = ServiceAccountCredentials.from_json_keyfile_name("/app/secrets.json", scope)
+        from google.oauth2.service_account import Credentials
+        creds = Credentials.from_service_account_file("/app/secrets.json", scopes=scope)
         client = gspread.authorize(creds)
         
-        # Abrir planilha
         sheet = client.open(SHEET_NAME).sheet1
-        dados = sheet.get_all_records()[-1]  # Última linha
+        dados = sheet.get_all_records()[-1]
         
         return {
             'preco': dados['preco'],
